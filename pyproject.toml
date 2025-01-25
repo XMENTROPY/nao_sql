@@ -1,5 +1,5 @@
 [project]
-name = "sqlnest"
+name = "nao_sql"
 version = "1.0.0"
 authors = [
     { name = "Noah Harris" }
