@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sqlnest"
+version = "1.0.0"
+authors = [
+    { name = "Noah Harris" }
+]
+description = "The point of this package is to streamline the interaction of mssql databases in Python."
+readme = "README.md"
+requires-python = ">=3.11"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent"
+]
+
+[project.dependencies]
+requests = ">=2.24.0"
+pyodbc = ">=5.0.1"
+
+[tool.setuptools.packages.find]
+include = ["sqlnest"]
