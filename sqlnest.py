@@ -3,10 +3,9 @@ import logging
 import functools
 import datetime
 import decimal
+from nao_logger import get_nao_logger
 
-# Setting up a logger for database operations
-database_command_logger = logging.getLogger('SQL Database')
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+database_command_logger = get_nao_logger('SQL Database')
 
 data_type_map = {
     int: 'INTEGER',               # INTEGER in SQL for Python int
@@ -116,43 +115,6 @@ class Database:
         except Exception as e:
             database_command_logger.critical(f'{e}')
             return None
-        
-    # @__db_operation
-    # def create_table(self, cursor:Cursor, table_name:str, column_definitions:dict[str:type], primary_key:list = None):
-    #     try:
-    #         data_types = '('
-    #         for column_name, data_type in column_definitions.items():
-    #             data_types += f'{column_name} {data_type_map.get(data_type)}, '
-    #         if primary_key:
-    #             primary_key_str = 'PRIMARY KEY ('
-    #             for key in primary_key:
-    #                 primary_key_str += f'{key}, '
-    #             primary_key_str = primary_key_str[0:-2] + ')'
-    #             data_types += primary_key_str + ')'
-    #         else:
-    #             data_types = data_types[0:-2] + ')'
-    #         statement = f'CREATE TABLE {table_name} {data_types}'
-    #         cursor.execute(statement)
-    #         logging.debug(f'SUCCESS: Table Created. {statement}')
-    #         self.connection.commit()
-    #         return True
-    #     except Exception as e:
-    #         logging.critical(f'FAILURE: Table Not Created. {statement}')
-    #         logging.debug(e, exc_info=True)
-    #         return False
-    
-    # @__db_operation
-    # def drop_table(self, cursor:Cursor, table_name:str):
-    #     try:
-    #         statement = f'DROP TABLE IF EXISTS {table_name}'
-    #         cursor.execute(statement)
-    #         logging.debug(f'SUCCESS: Table Dropped. {statement}')
-    #         self.connection.commit()
-    #         return True
-    #     except Exception as e:
-    #         logging.critical(f'FAILURE: Table Not Dropped. {statement}')
-    #         logging.debug(e, exc_info=True)
-    #         return False
     
     @__db_operation
     def select(
@@ -184,8 +146,10 @@ class Database:
             def quote_columns(column_str):
                 if column_str == '*':
                     return column_str
-                return ', '.join(f'[{col.strip()}]' for col in column_str)                 
+                return ', '.join(f'[{col.strip()}]' for col in column_str)               
+              
             query_parts = ['SELECT']
+
             if distinct:
                 query_parts.append('DISTINCT')
 
@@ -306,3 +270,53 @@ class Database:
             }
 
         return columns_raw_dict
+    
+    # Select with useful features
+    # Any necessary cmputations will be done in the database
+    # select
+    # columns (list of values)
+    # where (just the where clause)
+    # order by  (list of values)
+
+    # Return single columns (list of values)
+    # Return single cell (vlaue)
+    # Return sheet (list of tuples, first row is header, subsequent rows are data)
+    # Return dict_data (list of dicts, headers are keys)
+
+
+    # @__db_operation
+    # def create_table(self, cursor:Cursor, table_name:str, column_definitions:dict[str:type], primary_key:list = None):
+    #     try:
+    #         data_types = '('
+    #         for column_name, data_type in column_definitions.items():
+    #             data_types += f'{column_name} {data_type_map.get(data_type)}, '
+    #         if primary_key:
+    #             primary_key_str = 'PRIMARY KEY ('
+    #             for key in primary_key:
+    #                 primary_key_str += f'{key}, '
+    #             primary_key_str = primary_key_str[0:-2] + ')'
+    #             data_types += primary_key_str + ')'
+    #         else:
+    #             data_types = data_types[0:-2] + ')'
+    #         statement = f'CREATE TABLE {table_name} {data_types}'
+    #         cursor.execute(statement)
+    #         logging.debug(f'SUCCESS: Table Created. {statement}')
+    #         self.connection.commit()
+    #         return True
+    #     except Exception as e:
+    #         logging.critical(f'FAILURE: Table Not Created. {statement}')
+    #         logging.debug(e, exc_info=True)
+    #         return False
+    
+    # @__db_operation
+    # def drop_table(self, cursor:Cursor, table_name:str):
+    #     try:
+    #         statement = f'DROP TABLE IF EXISTS {table_name}'
+    #         cursor.execute(statement)
+    #         logging.debug(f'SUCCESS: Table Dropped. {statement}')
+    #         self.connection.commit()
+    #         return True
+    #     except Exception as e:
+    #         logging.critical(f'FAILURE: Table Not Dropped. {statement}')
+    #         logging.debug(e, exc_info=True)
+    #         return False
