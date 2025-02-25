@@ -1,6 +1,6 @@
 [project]
 name = "nao_sql"
-version = "1.0.1"
+version = "1.0.7"
 authors = [
     { name = "Noah Harris" }
 ]
