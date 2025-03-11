@@ -1,5 +1,4 @@
-from pyodbc import Cursor, Connection, connect
-import functools
+from pyodbc import Connection, connect
 import datetime
 import decimal
 from nao_logger import get_nao_logger
@@ -46,7 +45,7 @@ class Database:
 
         else:
             self.connection:Connection = self.login_windows_authentication(self.server, self.database)
-
+            
     def __str__(self) -> str:
         return self.server + '-' + self.database
 
@@ -66,12 +65,12 @@ class Database:
                 f'DATABASE={database};')
         try:
             connection = connect(connection, timeout = 120)
-            LOGGER.info('Connection Successful')
+            LOGGER.success('Connection Established')
             return connection
         except Exception as e:
             LOGGER.error(f'{e}')
             return None
-             
+
     def login_sql_server_authentication(self, server: str, database: str, username: str, password: str) -> Connection:
         """
         Establishes a connection to a SQL Server database using provided credentials.
@@ -91,133 +90,151 @@ class Database:
                 f'PWD={password}')
         try:
             connection = connect(connection, timeout = 120)
-            LOGGER.info('Connection Successful')
+            LOGGER.success('Connection Established')
             return connection
         except Exception as e:
             LOGGER.critical(f'{e}')
             return None
-    
-    def __db_operation(func):
-        @functools.wraps(func)
-        def wrapper(self, *args, **kwargs):
-            connection: Connection = self.connection
-            cursor = None
-            try:
-                cursor = connection.cursor()
-                result = func(self, cursor, *args, **kwargs)
-                connection.commit()
-                return result
-            except Exception as e:
-                print(f'An error occurred: {e}')
-                connection.rollback()
-                return None
-            finally:
-                if cursor:
-                    cursor.close()
-        return wrapper
-        
-    @__db_operation
-    def select(self, cursor: Cursor, table_name: str, cols='*', where: str = None, order_by: str = None, distinct: bool = False):
-        # If cols is a list, convert it to a comma-separated string.
-        if isinstance(cols, list):
-            cols = ', '.join(cols)
-        
+
+    def select(self, table:str, distinct:bool=False, columns:list=['*'], where:str=None, order_by:str=None):
+        """
+        Returns a list of dictionaries that represent the rows and their columns.
+
+        :param table[str]: Name of the table.
+        :param distinct[bool]: Return distinct results
+        :param columns[list]: List of columns to return
+        :param where[str]: Where clause
+        :param where[order by]: Columns to order by
+
+        :return: A list[dict] that represents the queried data
+        """
+
+        # Handle * selection
+        columns = '*' if columns == ['*'] else columns
+
+        # Build query
         query = 'SELECT '
         if distinct:
             query += 'DISTINCT '
-        query += f'{cols} FROM {table_name}'
+        query += f'{columns} FROM {table}'
         if where:
             query += f' WHERE {where}'
         if order_by:
             query += f' ORDER BY {order_by}'
 
-        LOGGER.debug(f'Executing query: {query}')
-        cursor.execute(query)
+        # Execute query
+        with self.connection.cursor() as cursor:
+            try:
+                cursor.execute(query)
+                columns = [column[0] for column in cursor.description]
+                rows = cursor.fetchall()
+                data = [dict(zip(columns, row)) for row in rows]
+                LOGGER.success(f'{query}')
+                return data
+
+            except Exception as e:
+                LOGGER.failure(f'{query}')
+                LOGGER.debug(e, exc_info=True)
+                return False
+
+    def insert(self, table:str, data:dict):
+        with self.connection.cursor() as cursor:
+            # Get the columns of the data
+            columns = cursor.columns(table=table)
+            columns = [column.column_name for column in columns]
+
+            # Filter the data to be inserted
+            filtered_data = {}
+            for key, value in data.items():
+                if key in columns:
+                    filtered_data[key] = value
+
+            # If no valid columns remain after filtering, abort the operation.
+            if not filtered_data:
+                LOGGER.warning("No matching columns found in the table for the provided data.")
+                return False
+
+            # Prepare the column names and corresponding values.
+            columns = list(filtered_data.keys())
+            values = list(filtered_data.values())
+
+            try:
+                # Create placeholders for the values.
+                placeholders = ', '.join(['?' for _ in columns])
+                query = f'INSERT INTO {table} ({", ".join(columns)}) VALUES ({placeholders})'
+                cursor.execute(query, values)
+                LOGGER.success(f'{query}')
+                return filtered_data
+            
+            except Exception as e:
+                LOGGER.failure(f'{query}')
+                LOGGER.debug(e, exc_info=True)
+                return False
+
+    def query(self, query:str):
+        with self.connection.cursor() as cursor:
+
+            try:
+                cursor.execute(query)
+                columns = [column[0] for column in cursor.description]
+                rows = cursor.fetchall()
+                data = [dict(zip(columns, row)) for row in rows]
+                LOGGER.success(f'{query}')
+                return data
+            
+            except Exception as e:
+                LOGGER.failure(f'{query}')
+                LOGGER.debug(e, exc_info=True)
+                return False
+
+    def get_definition(self, table:str) -> dict:
+        with self.connection.cursor() as cursor:
+            columns = cursor.columns(table=table)
+            column_info:dict = {}
+            for column in columns:
+                column_info[column.column_name] = {
+                    'TABLE_CAT': column.table_cat,
+                    'TABLE_SCHEM': column.table_schem,
+                    'TABLE_NAME': column.table_name,
+                    'COLUMN_NAME': column.column_name,
+                    'DATA_TYPE': column.data_type,
+                    'TYPE_NAME': column.type_name,
+                    'COLUMN_SIZE': column.column_size,
+                    'BUFFER_LENGTH': column.buffer_length,
+                    'DECIMAL_DIGITS': column.decimal_digits,
+                    'NUM_PREC_RADIX': column.num_prec_radix,
+                    'NULLABLE': column.nullable,
+                    'REMARKS': column.remarks,
+                    'COLUMN_DEF': column.column_def,
+                    'SQL_DATA_TYPE': column.sql_data_type,
+                    'SQL_DATETIME_SUB': column.sql_datetime_sub,
+                    'CHAR_OCTET_LENGTH': column.char_octet_length,
+                    'ORDINAL_POSITION': column.ordinal_position,
+                    'IS_NULLABLE': column.is_nullable,
+                }
+                LOGGER.success(f'{column_info}')
+            return column_info
+
+    def get_columns(self, table:str) -> list:
+        with self.connection.cursor() as cursor:
+            try:
+                results = cursor.columns(table=table)
+                columns = [column.column_name for column in results]
+                LOGGER.success(f'{columns}')
+                return columns
+
+            except Exception as e:
+                LOGGER.failure(e, exec_info=True)
+
+    def get_primary_keys(self, table:str) -> list:
+        with self.connection.cursor() as cursor:
+            try:
+                results = cursor.primaryKeys(table)
+                pks = [pk.column_name for pk in results]
+                return pks
         
-        # Extract column names from the cursor description.
-        columns = [column[0] for column in cursor.description]
-        
-        # Fetch all rows and convert each row to a dict (with column names as keys).
-        rows = cursor.fetchall()
-        result_list = [dict(zip(columns, row)) for row in rows]
-        
-        return result_list
+            except Exception as e:
+                LOGGER.failure(e, exec_info=True)
 
-    @__db_operation
-    def insert(self, cursor: Cursor, table_name: str, dict_data: dict = None):
-        # Ensure dict_data is provided
-        if not dict_data:
-            LOGGER.warning("No data provided to insert.")
-            return False
-
-        # NOTE: If the table name includes a schema (e.g., "schema.table"),
-        # the column checker below may fail. This is a known bug that should be fixed.
-        table_columns = list(cursor.columns(table_name=table_name).keys())
-        filtered_dict_data = {}
-        for key, value in dict_data.items():
-            if key in table_columns:
-                filtered_dict_data[key] = value
-
-        # If no valid columns remain after filtering, abort the operation.
-        if not filtered_dict_data:
-            LOGGER.warning("No matching columns found in the table for the provided data.")
-            return False
-
-        # Prepare the column names and corresponding values.
-        columns = list(filtered_dict_data.keys())
-        values = list(filtered_dict_data.values())
-
-        try:
-            # Create placeholders for the values.
-            placeholders = ', '.join(['?' for _ in columns])
-            statement = f'INSERT INTO {table_name} ({", ".join(columns)}) VALUES ({placeholders})'
-            cursor.execute(statement, values)
-            LOGGER.debug(f'SUCCESS: {statement}')
-            self.connection.commit()
-            return True
-        except Exception as e:
-            LOGGER.critical(f'FAILURE: {statement}')
-            LOGGER.debug(e, exc_info=True)
-            return False
-
-    @__db_operation
-    def statement(self, cursor:Cursor, statement:str):
-        # To pass params to the statement, give the function a tuple. The statement will use the param tuple arguements in order. They replace the question marks in the statement, in order.
-        try:
-            cursor.execute(statement)
-            LOGGER.debug(f'SUCCESS: {statement}')
-            result = cursor.fetchall()
-            self.connection.commit()
-            return result
-        except Exception as e:
-            LOGGER.critical(f'FAILURE: {statement}')
-            LOGGER.debug(e, exc_info=True)
-            return False
-        
-    @__db_operation
-    def get_definition(self, cursor:Cursor, table_name:str, schema_name:str='dbo') -> dict:
-        columns = cursor.columns(table=table_name, schema=schema_name)
-        columns_raw_dict = {}
-        for column in columns:
-            columns_raw_dict[column.column_name] = {
-                'TABLE_CAT': column.table_cat,
-                'TABLE_SCHEM': column.table_schem,
-                'TABLE_NAME': column.table_name,
-                'COLUMN_NAME': column.column_name,
-                'DATA_TYPE': column.data_type,
-                'TYPE_NAME': column.type_name,
-                'COLUMN_SIZE': column.column_size,
-                'BUFFER_LENGTH': column.buffer_length,
-                'DECIMAL_DIGITS': column.decimal_digits,
-                'NUM_PREC_RADIX': column.num_prec_radix,
-                'NULLABLE': column.nullable,
-                'REMARKS': column.remarks,
-                'COLUMN_DEF': column.column_def,
-                'SQL_DATA_TYPE': column.sql_data_type,
-                'SQL_DATETIME_SUB': column.sql_datetime_sub,
-                'CHAR_OCTET_LENGTH': column.char_octet_length,
-                'ORDINAL_POSITION': column.ordinal_position,
-                'IS_NULLABLE': column.is_nullable,
-            }
-
-        return columns_raw_dict### 
+if __name__=="__main__":
+    db = Database(server='127.0.0.1', database='nao_budget')
