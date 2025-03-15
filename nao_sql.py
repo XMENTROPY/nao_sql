@@ -2,6 +2,8 @@ from pyodbc import Connection, connect
 import datetime
 import decimal
 from nao_logger import get_nao_logger
+from enum import Enum
+import json
 
 LOGGER = get_nao_logger('nao_sql')
 
@@ -19,6 +21,13 @@ data_type_map = {
     dict: 'TEXT',                 # Serialized dictionary (e.g., JSON) stored as TEXT in SQL
     None: 'NULL',                 # NULL in SQL for Python None
 }
+
+class ReturnMode(Enum):
+    JSON=1
+    ROW=2
+    COLUMN=3
+    VALUE=4
+    DICT=5
 
 class Database:
 
@@ -40,14 +49,17 @@ class Database:
         self.server:str = server
         self.database:str = database
 
-        if self.username and self.password:
-            self.connection:Connection = self.login_sql_server_authentication(self.server, self.database, self.username, self.password)
-
-        else:
-            self.connection:Connection = self.login_windows_authentication(self.server, self.database)
-            
     def __str__(self) -> str:
         return self.server + '-' + self.database
+    
+    def login(self):
+        if self.username and self.password:
+            connection:Connection = self.login_sql_server_authentication(self.server, self.database, self.username, self.password)
+            return connection
+
+        else:
+            connection:Connection = self.login_windows_authentication(self.server, self.database)
+            return connection
 
     def login_windows_authentication(self, server: str,database: str) -> Connection:
         """
@@ -96,7 +108,7 @@ class Database:
             LOGGER.critical(f'{e}')
             return None
 
-    def select(self, table:str, distinct:bool=False, columns:list=['*'], where:str=None, order_by:str=None):
+    def select(self, table:str, distinct:bool=False, columns:list=['*'], where:str=None, order_by:str=None, return_mode=ReturnMode.DICT):
         """
         Returns a list of dictionaries that represent the rows and their columns.
 
@@ -110,8 +122,9 @@ class Database:
         """
 
         # Handle * selection
-        columns = '*' if columns == ['*'] else columns
-
+        columns = '*' if columns == ['*'] else ', '.join(f'[{column}]' for column in columns)
+        order_by = ', '.join(f'[{column}]' for column in order_by) if order_by else None
+        
         # Build query
         query = 'SELECT '
         if distinct:
@@ -123,118 +136,145 @@ class Database:
             query += f' ORDER BY {order_by}'
 
         # Execute query
-        with self.connection.cursor() as cursor:
-            try:
-                cursor.execute(query)
-                columns = [column[0] for column in cursor.description]
-                rows = cursor.fetchall()
-                data = [dict(zip(columns, row)) for row in rows]
-                LOGGER.success(f'{query}')
-                return data
-
-            except Exception as e:
-                LOGGER.failure(f'{query}')
-                LOGGER.debug(e, exc_info=True)
-                return False
+        data = self.query(query, return_mode)
+        return data
 
     def insert(self, table:str, data:dict):
-        with self.connection.cursor() as cursor:
-            # Get the columns of the data
-            columns = cursor.columns(table=table)
-            columns = [column.column_name for column in columns]
+        with self.login() as connection:
+            with connection.cursor() as cursor:
+                # Get the columns of the data
+                columns = cursor.columns(table=table)
+                columns = [column.column_name for column in columns]
 
-            # Filter the data to be inserted
-            filtered_data = {}
-            for key, value in data.items():
-                if key in columns:
-                    filtered_data[key] = value
+                # Filter the data to be inserted
+                filtered_data = {}
+                for key, value in data.items():
+                    if key in columns:
+                        filtered_data[key] = value
 
-            # If no valid columns remain after filtering, abort the operation.
-            if not filtered_data:
-                LOGGER.warning("No matching columns found in the table for the provided data.")
-                return False
+                # If no valid columns remain after filtering, abort the operation.
+                if not filtered_data:
+                    LOGGER.warning("No matching columns found in the table for the provided data.")
+                    return False
 
-            # Prepare the column names and corresponding values.
-            columns = list(filtered_data.keys())
-            values = list(filtered_data.values())
+                # Prepare the column names and corresponding values.
+                columns = list(filtered_data.keys())
+                values = list(filtered_data.values())
 
-            try:
-                # Create placeholders for the values.
-                placeholders = ', '.join(['?' for _ in columns])
-                query = f'INSERT INTO {table} ({", ".join(columns)}) VALUES ({placeholders})'
-                cursor.execute(query, values)
-                LOGGER.success(f'{query}')
-                return filtered_data
-            
-            except Exception as e:
-                LOGGER.failure(f'{query}')
-                LOGGER.debug(e, exc_info=True)
-                return False
+                try:
+                    # Create placeholders for the values.
+                    placeholders = ', '.join(['?' for _ in columns])
+                    query = f'INSERT INTO {table} ({", ".join(columns)}) VALUES ({placeholders})'
+                    cursor.execute(query, values)
+                    LOGGER.success(f'{query}')
+                    return filtered_data
+                
+                except Exception as e:
+                    LOGGER.failure(f'{query}')
+                    LOGGER.debug(e, exc_info=True)
+                    return False
 
-    def query(self, query:str):
-        with self.connection.cursor() as cursor:
+    def query(self, query:str, return_mode=ReturnMode.DICT):
+        with self.login() as connection:
+            with connection.cursor() as cursor:
 
-            try:
-                cursor.execute(query)
-                columns = [column[0] for column in cursor.description]
-                rows = cursor.fetchall()
-                data = [dict(zip(columns, row)) for row in rows]
-                LOGGER.success(f'{query}')
-                return data
-            
-            except Exception as e:
-                LOGGER.failure(f'{query}')
-                LOGGER.debug(e, exc_info=True)
-                return False
+                try:
+                    cursor.execute(query)
+                    columns = [column[0] for column in cursor.description]
+                    rows = cursor.fetchall()
+
+                    # Check no values
+                    if len(rows) == 0:
+                        return []
+
+                    # Check Single Value
+                    if len(rows[0]) > 1 and return_mode == ReturnMode.VALUE:
+                        raise IndexError('ReturnMode.VALUE selected, but more than 1 row present')
+                    
+                    # # Check Row Value
+                    # for row in rows:
+                    #     if len(row) > 1 and return_mode == ReturnMode.COLUMN:
+                    #         raise IndexError('ReturnMode.COLUMN selected, but more than 1 column present')
+                        
+                    # Check Return Mode
+                    match return_mode:
+                        case ReturnMode.VALUE:
+                            LOGGER.success(f'{query}')
+                            return rows[0][0]
+                        
+                        case ReturnMode.ROW:
+                            LOGGER.success(f'{query}')
+                            return rows
+                        
+                        case ReturnMode.JSON:
+                            LOGGER.success(f'{query}')
+                            return json.dumps([dict(zip(columns, row)) for row in rows], default=str)
+
+                        case ReturnMode.COLUMN:
+                            LOGGER.success(f'{query}')
+                            return [row[0] for row in rows]
+                        
+                        case ReturnMode.DICT:
+                            LOGGER.success(f'{query}')
+                            return [dict(zip(columns, row)) for row in rows]
+
+                        case _:
+                            raise TypeError('Invalid Return Mode Selected')
+                        
+                except Exception as e:
+                    LOGGER.failure(f'{query}')
+                    LOGGER.debug(e, exc_info=True)
+                    return False
 
     def get_definition(self, table:str) -> dict:
-        with self.connection.cursor() as cursor:
-            columns = cursor.columns(table=table)
-            column_info:dict = {}
-            for column in columns:
-                column_info[column.column_name] = {
-                    'TABLE_CAT': column.table_cat,
-                    'TABLE_SCHEM': column.table_schem,
-                    'TABLE_NAME': column.table_name,
-                    'COLUMN_NAME': column.column_name,
-                    'DATA_TYPE': column.data_type,
-                    'TYPE_NAME': column.type_name,
-                    'COLUMN_SIZE': column.column_size,
-                    'BUFFER_LENGTH': column.buffer_length,
-                    'DECIMAL_DIGITS': column.decimal_digits,
-                    'NUM_PREC_RADIX': column.num_prec_radix,
-                    'NULLABLE': column.nullable,
-                    'REMARKS': column.remarks,
-                    'COLUMN_DEF': column.column_def,
-                    'SQL_DATA_TYPE': column.sql_data_type,
-                    'SQL_DATETIME_SUB': column.sql_datetime_sub,
-                    'CHAR_OCTET_LENGTH': column.char_octet_length,
-                    'ORDINAL_POSITION': column.ordinal_position,
-                    'IS_NULLABLE': column.is_nullable,
-                }
-                LOGGER.success(f'{column_info}')
-            return column_info
+        with self.login() as connection:
+            with connection.cursor() as cursor:
+                columns = cursor.columns(table=table)
+                column_info:dict = {}
+                for column in columns:
+                    column_info[column.column_name] = {
+                        'TABLE_CAT': column.table_cat,
+                        'TABLE_SCHEM': column.table_schem,
+                        'TABLE_NAME': column.table_name,
+                        'COLUMN_NAME': column.column_name,
+                        'DATA_TYPE': column.data_type,
+                        'TYPE_NAME': column.type_name,
+                        'COLUMN_SIZE': column.column_size,
+                        'BUFFER_LENGTH': column.buffer_length,
+                        'DECIMAL_DIGITS': column.decimal_digits,
+                        'NUM_PREC_RADIX': column.num_prec_radix,
+                        'NULLABLE': column.nullable,
+                        'REMARKS': column.remarks,
+                        'COLUMN_DEF': column.column_def,
+                        'SQL_DATA_TYPE': column.sql_data_type,
+                        'SQL_DATETIME_SUB': column.sql_datetime_sub,
+                        'CHAR_OCTET_LENGTH': column.char_octet_length,
+                        'ORDINAL_POSITION': column.ordinal_position,
+                        'IS_NULLABLE': column.is_nullable,
+                    }
+                    LOGGER.success(f'{column_info}')
+                return column_info
 
     def get_columns(self, table:str) -> list:
-        with self.connection.cursor() as cursor:
-            try:
-                results = cursor.columns(table=table)
-                columns = [column.column_name for column in results]
-                LOGGER.success(f'{columns}')
-                return columns
+        with self.login() as connection:
+            with connection.cursor() as cursor:
+                try:
+                    results = cursor.columns(table=table)
+                    columns = [column.column_name for column in results]
+                    LOGGER.success(f'{columns}')
+                    return columns
 
-            except Exception as e:
-                LOGGER.failure(e, exec_info=True)
+                except Exception as e:
+                    LOGGER.failure(e, exec_info=True)
 
     def get_primary_keys(self, table:str) -> list:
-        with self.connection.cursor() as cursor:
-            try:
-                results = cursor.primaryKeys(table)
-                pks = [pk.column_name for pk in results]
-                return pks
-        
-            except Exception as e:
-                LOGGER.failure(e, exec_info=True)
+        with self.login() as connection:
+            with connection.cursor() as cursor:
+                try:
+                    results = cursor.primaryKeys(table)
+                    pks = [pk.column_name for pk in results]
+                    return pks
+            
+                except Exception as e:
+                    LOGGER.failure(e, exec_info=True)
 
-if __name__=="__main__":
-    db = Database(server='127.0.0.1', database='nao_budget')
